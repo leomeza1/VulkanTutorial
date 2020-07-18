@@ -3,9 +3,10 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <optional>
+#include <set>
 #include <stdexcept>
 #include <vector>
-#include <optional>
 
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
@@ -48,9 +49,10 @@ void DestroyDebugUtilsMessengerEXT( VkInstance instance,
 
 struct QueueFamilyIndices {
     std::optional<uint32_t> graphicsFamily;
+    std::optional<uint32_t> presentFamily;
 
     bool isComplete() {
-        return graphicsFamily.has_value();
+        return graphicsFamily.has_value() && presentFamily.has_value();
     }
 };
 
@@ -66,6 +68,7 @@ public:
 private:
 
     VkQueue                  graphicsQueue;
+    VkQueue                  presentQueue;
     VkDevice                 device;
     VkInstance               instance;
     VkDebugUtilsMessengerEXT debugMessenger;
@@ -83,6 +86,8 @@ private:
 
         return VK_FALSE;
     }
+
+    VkSurfaceKHR surface;
 
     bool checkValidationLayerSupport() {
 
@@ -126,6 +131,9 @@ private:
             // debugMessenger instance prior to destroying the VkInstance it is associated with.
             DestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
         }
+
+        // Destroy the VkSurfaceKHR object before the VkInstance object.
+        vkDestroySurfaceKHR(instance, surface, nullptr);
 
         vkDestroyInstance(instance, nullptr);
 
@@ -197,23 +205,30 @@ private:
 
     void createLogicalDevice() {
 
-        float queuePriority = 1.0f;
         QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
 
-        VkDeviceQueueCreateInfo queueCreateInfo{};
+        std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
+        std::set<uint32_t> uniqueQueueFamilies = { indices.graphicsFamily.value(), indices.presentFamily.value() };
 
-        queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-        queueCreateInfo.queueFamilyIndex = indices.graphicsFamily.value();
-        queueCreateInfo.queueCount = 1;
-        queueCreateInfo.pQueuePriorities = &queuePriority;
+        float queuePriority = 1.0f;
+        for (uint32_t queueFamily : uniqueQueueFamilies) {
+
+            VkDeviceQueueCreateInfo queueCreateInfo{};
+            queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+            queueCreateInfo.queueFamilyIndex = queueFamily;
+            queueCreateInfo.queueCount = 1;
+            queueCreateInfo.pQueuePriorities = &queuePriority;
+
+            queueCreateInfos.push_back(queueCreateInfo);
+        }
 
         VkPhysicalDeviceFeatures deviceFeatures{};
 
         VkDeviceCreateInfo createInfo{};
 
         createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-        createInfo.pQueueCreateInfos = &queueCreateInfo;
-        createInfo.queueCreateInfoCount = 1;
+        createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
+        createInfo.pQueueCreateInfos = queueCreateInfos.data();
         createInfo.pEnabledFeatures = &deviceFeatures;
         createInfo.enabledExtensionCount = 0;
 
@@ -230,27 +245,46 @@ private:
         }
 
         vkGetDeviceQueue(device, indices.graphicsFamily.value(), 0, &graphicsQueue);
+        vkGetDeviceQueue(device, indices.presentFamily.value(),  0, &presentQueue);
+    }
+
+    void createSurface() {
+
+        if (glfwCreateWindowSurface(instance, window, nullptr, &surface) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create window surface!");
+        }
     }
 
     QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device) {
-        
+
+        // Instantiate a QueueFamilyIndices object to track which available queue families are usable
         QueueFamilyIndices indices;
 
+        // Get a list of available queue families from the physical device
         uint32_t queueFamilyCount = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, nullptr);
-
         std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
         vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies.data());
 
         int i = 0;
 
+        // Loop through the available queue families looking for one to use
         for (const auto& queueFamily : queueFamilies) {
 
-            if (queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+            // Check if this queue family supports presenting to the surface
+            VkBool32 presentSupport = false;
+            vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presentSupport);
+            if (presentSupport) {
+                indices.presentFamily = i;
+            }
 
+            // Check if this queue family supports graphics operations
+            if (queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
                 indices.graphicsFamily = i;
             }
 
+            // Break out of the loop as soon as we find a queue family that supports presenting
+            // to the surface and also a queue family that supports graphics operations.
             if (indices.isComplete()) {
                 break;
             }
@@ -258,7 +292,7 @@ private:
             i++;
         }
 
-        // Assign index to queue families that could be found
+        // Return the indices of the queue families that we can use
         return indices;
     }
 
@@ -282,6 +316,8 @@ private:
         createInstance();
 
         setupDebugMessenger();
+
+        createSurface();
 
         pickPhysicalDevice();
 
